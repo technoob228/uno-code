@@ -673,6 +673,7 @@ export function Session() {
     {
       title: showTimestamps() ? "Hide timestamps" : "Show timestamps",
       value: "session.toggle.timestamps",
+      search: "toggle timestamps",
       category: "Session",
       slash: {
         name: "timestamps",
@@ -706,7 +707,7 @@ export function Session() {
       },
     },
     {
-      title: "Toggle session scrollbar",
+      title: showScrollbar() ? "Hide session scrollbar" : "Show session scrollbar",
       value: "session.toggle.scrollbar",
       category: "Session",
       run: () => {
