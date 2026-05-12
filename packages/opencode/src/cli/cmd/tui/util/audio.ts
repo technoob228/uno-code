@@ -1,15 +1,46 @@
-import { Audio, type AudioErrorContext, type AudioPlayOptions, type AudioSound, type AudioVoice } from "@opentui/core"
+import * as OpenTuiCore from "@opentui/core"
 import * as Log from "@opencode-ai/core/util/log"
 
 const log = Log.create({ service: "tui.audio" })
 
-let audio: Audio | null | undefined
+export type AudioErrorContext = {
+  action: string
+  status?: number
+}
+
+export type AudioPlayOptions = {
+  volume?: number
+  pan?: number
+  loop?: boolean
+  groupId?: number
+}
+
+export type AudioSound = number
+export type AudioVoice = number
+
+type AudioEngine = {
+  on(event: "error", listener: (error: Error, context: AudioErrorContext) => void): unknown
+  loadSoundFile(filePath: string): Promise<AudioSound | null>
+  play(sound: AudioSound, options?: AudioPlayOptions): AudioVoice | null
+  stopVoice(voice: AudioVoice): boolean
+  start(): boolean
+  isStarted(): boolean
+  dispose(): void
+}
+
+let audio: AudioEngine | null | undefined
 const sounds = new Map<string, Promise<AudioSound | null>>()
 
 function getAudio() {
   if (audio !== undefined) return audio
   try {
-    const next = Audio.create({ autoStart: false })
+    const next = (OpenTuiCore as { Audio?: { create(options?: { autoStart?: boolean }): AudioEngine } }).Audio?.create({
+      autoStart: false,
+    })
+    if (!next) {
+      audio = null
+      return null
+    }
     next.on("error", (error: Error, context: AudioErrorContext) => {
       log.debug("tui audio error", { error, context })
     })

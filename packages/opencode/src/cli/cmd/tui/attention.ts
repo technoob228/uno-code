@@ -1,4 +1,3 @@
-import type { AudioSound } from "@opentui/core"
 import type {
   TuiAttention,
   TuiAttentionNotifyInput,
@@ -26,7 +25,7 @@ type AttentionRenderer = {
   readonly isDestroyed: boolean
   on(event: "focus" | "blur", listener: () => void): unknown
   off(event: "focus" | "blur", listener: () => void): unknown
-  triggerNotification(message: string, title?: string): boolean
+  triggerNotification?(message: string, title?: string): boolean
 }
 
 type RegisteredSoundPack = TuiAttentionSoundPack & {
@@ -153,7 +152,7 @@ export function createTuiAttention(input: {
   let disposed = false
   let activePackID: string | undefined
   const packs = new Map<string, RegisteredSoundPack>([[BUILTIN_PACK.id, BUILTIN_PACK]])
-  const sounds = new Map<string, Promise<AudioSound | null>>()
+  const sounds = new Map<string, Promise<TuiAudio.AudioSound | null>>()
   const audio = input.audio ?? TuiAudio
 
   const onFocus = () => {
@@ -219,7 +218,7 @@ export function createTuiAttention(input: {
         const notificationSkip = focusSkip(notificationWhen(request), focus)
         const notificationRequested = input.config.attention.notifications && notificationEnabled(request)
         const shouldNotify = notificationRequested && !notificationSkip
-        const notification = shouldNotify
+        const notification = shouldNotify && input.renderer.triggerNotification
           ? (() => {
               try {
                 return input.renderer.triggerNotification(

@@ -4,7 +4,6 @@ import {
   MouseEvent,
   RGBA,
   TextAttributes,
-  type AudioVoice,
 } from "@opentui/core"
 import { useRenderer } from "@opentui/solid"
 import { For, createMemo, createSignal, onCleanup, onMount, type JSX } from "solid-js"
@@ -101,7 +100,7 @@ const GLOW_OUT = 1600
 const PEAK = RGBA.fromInts(255, 255, 255)
 const PULSE_SOUNDS = [pulseA, pulseB, pulseC]
 
-let logoAudioVoice: AudioVoice | undefined
+let logoAudioVoice: TuiAudio.AudioVoice | undefined
 let logoAudioTail: ReturnType<typeof setTimeout> | undefined
 let logoAudioSeq = 0
 let logoAudioShot = 0
