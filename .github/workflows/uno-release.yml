@@ -1,0 +1,159 @@
+name: uno-release
+run-name: "uno release ${{ inputs.tag || github.ref_name }}"
+
+on:
+  push:
+    tags:
+      - "uno-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to publish (e.g. uno-v1.14.48-uno.1). Will be created if missing."
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target_os: darwin
+            target_arch: arm64
+          - os: macos-13
+            target_os: darwin
+            target_arch: x64
+          - os: ubuntu-latest
+            target_os: linux
+            target_arch: x64
+          - os: ubuntu-24.04-arm
+            target_os: linux
+            target_arch: arm64
+          - os: windows-latest
+            target_os: win32
+            target_arch: x64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Resolve tag
+        id: resolve
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.3.13"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+        shell: bash
+
+      - name: Build uno-code (current platform, single binary)
+        env:
+          OPENCODE_VERSION: ${{ steps.resolve.outputs.tag }}
+        run: bun script/build.ts --single --skip-embed-web-ui
+        working-directory: packages/opencode
+        shell: bash
+
+      - name: Locate built binary
+        id: locate
+        shell: bash
+        run: |
+          BIN_DIR=$(find packages/opencode/dist -maxdepth 2 -type d -name bin | head -1)
+          if [[ -z "$BIN_DIR" ]]; then
+            echo "::error::No dist/*/bin directory produced by build"
+            exit 1
+          fi
+          echo "bin_dir=$BIN_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Package archive (unix)
+        if: matrix.target_os != 'win32'
+        shell: bash
+        env:
+          BIN_DIR: ${{ steps.locate.outputs.bin_dir }}
+          TARGET_OS: ${{ matrix.target_os }}
+          TARGET_ARCH: ${{ matrix.target_arch }}
+        run: |
+          set -euo pipefail
+          STAGE=$(mktemp -d)
+          cp "$BIN_DIR/uno-code" "$STAGE/uno-code"
+          chmod +x "$STAGE/uno-code"
+          mkdir -p artifacts
+          case "$TARGET_OS" in
+            darwin)
+              (cd "$STAGE" && zip -q "$GITHUB_WORKSPACE/artifacts/uno-code-darwin-$TARGET_ARCH.zip" uno-code)
+              ;;
+            linux)
+              tar -C "$STAGE" -czf "artifacts/uno-code-linux-$TARGET_ARCH.tar.gz" uno-code
+              ;;
+          esac
+          ls -la artifacts
+
+      - name: Package archive (windows)
+        if: matrix.target_os == 'win32'
+        shell: pwsh
+        env:
+          BIN_DIR: ${{ steps.locate.outputs.bin_dir }}
+          TARGET_ARCH: ${{ matrix.target_arch }}
+        run: |
+          $stage = New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP "stage")
+          Copy-Item -Path (Join-Path $env:BIN_DIR "uno-code.exe") -Destination (Join-Path $stage "uno-code.exe")
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $zip = "artifacts/uno-code-windows-$env:TARGET_ARCH.zip"
+          Compress-Archive -Path (Join-Path $stage "uno-code.exe") -DestinationPath $zip -Force
+          Get-ChildItem artifacts
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uno-code-${{ matrix.target_os }}-${{ matrix.target_arch }}
+          path: artifacts/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -la artifacts
+
+      - name: Resolve release tag
+        id: resolve
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.resolve.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "Automated uno-code build for $TAG." \
+              --target "${GITHUB_SHA}"
+          fi
+          gh release upload "$TAG" artifacts/* --clobber
