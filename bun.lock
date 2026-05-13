@@ -360,7 +360,7 @@
       "name": "opencode",
       "version": "1.14.48",
       "bin": {
-        "opencode": "./bin/opencode",
+        "uno-code": "./bin/uno-code",
       },
       "dependencies": {
         "@actions/core": "1.11.1",
