@@ -24,9 +24,10 @@ jobs:
           - os: macos-14
             target_os: darwin
             target_arch: arm64
-          - os: macos-13
-            target_os: darwin
-            target_arch: x64
+          # macos-13 (Intel) free-tier runners queue indefinitely. Apple Silicon
+          # users get the native build above; Intel Mac users fall through to
+          # Uno Work's non-blocking "release-not-published" banner and can point
+          # at a custom binary in Settings.
           - os: ubuntu-latest
             target_os: linux
             target_arch: x64
