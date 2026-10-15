@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { APICallError } from "ai"
 import { setTimeout as sleep } from "node:timers/promises"
-import { Effect, Layer, Schedule, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Option, Schedule, Schema } from "effect"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { SessionRetry } from "../../src/session/retry"
 import { MessageV2 } from "../../src/session/message-v2"
@@ -114,6 +114,71 @@ describe("session.retry.delay", () => {
         })
       }),
     ),
+  )
+
+  it.live("policy gives up after RETRY_MAX_ATTEMPTS failed retries", () =>
+    Effect.gen(function* () {
+      const error = apiError({ "retry-after-ms": "0" })
+      const attempts: number[] = []
+      const exit = yield* Effect.fail(error).pipe(
+        Effect.retry(
+          SessionRetry.policy({
+            provider: retryProvider,
+            parse: Schema.decodeUnknownSync(MessageV2.APIError.Schema),
+            set: (info) => Effect.sync(() => void attempts.push(info.attempt)),
+          }),
+        ),
+        Effect.exit,
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      expect(attempts).toStrictEqual(Array.from({ length: SessionRetry.RETRY_MAX_ATTEMPTS }, (_, i) => i + 1))
+    }),
+  )
+
+  it.live("policy surfaces the error immediately when server delay exceeds the max", () =>
+    Effect.gen(function* () {
+      const cases = [
+        apiError({ "retry-after": String(SessionRetry.RETRY_MAX_SERVER_DELAY / 1000 + 1) }),
+        apiError({ "retry-after-ms": String(SessionRetry.RETRY_MAX_SERVER_DELAY + 1) }),
+        apiError({ "retry-after": new Date(Date.now() + 6 * 60 * 60 * 1000).toUTCString() }),
+      ]
+      for (const error of cases) {
+        const attempts: number[] = []
+        const exit = yield* Effect.fail(error).pipe(
+          Effect.retry(
+            SessionRetry.policy({
+              provider: retryProvider,
+              parse: Schema.decodeUnknownSync(MessageV2.APIError.Schema),
+              set: (info) => Effect.sync(() => void attempts.push(info.attempt)),
+            }),
+          ),
+          Effect.exit,
+        )
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBe(error)
+        expect(attempts).toStrictEqual([])
+      }
+    }),
+  )
+
+  it.live("policy still honours server delays up to the max", () =>
+    Effect.gen(function* () {
+      const error = apiError({ "retry-after": String(SessionRetry.RETRY_MAX_SERVER_DELAY / 1000) })
+      const waits: number[] = []
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: retryProvider,
+          parse: Schema.decodeUnknownSync(MessageV2.APIError.Schema),
+          set: (info) => Effect.sync(() => void waits.push(info.next - Date.now())),
+        }),
+      )
+      // The step sleeps for the requested delay; we only need to see that it scheduled one.
+      const result = yield* step(error).pipe(Effect.timeoutOption("200 millis"))
+      expect(Option.isNone(result)).toBe(true)
+      expect(waits).toHaveLength(1)
+      expect(waits[0]).toBeGreaterThan(SessionRetry.RETRY_MAX_SERVER_DELAY - 5000)
+      expect(waits[0]).toBeLessThanOrEqual(SessionRetry.RETRY_MAX_SERVER_DELAY)
+    }),
   )
 })
 

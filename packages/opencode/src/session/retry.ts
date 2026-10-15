@@ -26,41 +26,41 @@ export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+// Give up after this many failed retries so a turn can never hang forever.
+export const RETRY_MAX_ATTEMPTS = 8
+// A server asking us to wait longer than this (e.g. a daily limit resetting at midnight)
+// is not a transient failure: surface its error instead of sleeping silently.
+export const RETRY_MAX_SERVER_DELAY = 15 * 60 * 1000 // 15 minutes
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
 }
 
-export function delay(attempt: number, error?: MessageV2.APIError) {
-  if (error) {
-    const headers = error.data.responseHeaders
-    if (headers) {
-      const retryAfterMs = headers["retry-after-ms"]
-      if (retryAfterMs) {
-        const parsedMs = Number.parseFloat(retryAfterMs)
-        if (!Number.isNaN(parsedMs)) {
-          return cap(parsedMs)
-        }
-      }
-
-      const retryAfter = headers["retry-after"]
-      if (retryAfter) {
-        const parsedSeconds = Number.parseFloat(retryAfter)
-        if (!Number.isNaN(parsedSeconds)) {
-          // convert seconds to milliseconds
-          return cap(Math.ceil(parsedSeconds * 1000))
-        }
-        // Try parsing as HTTP date format
-        const parsed = Date.parse(retryAfter) - Date.now()
-        if (!Number.isNaN(parsed) && parsed > 0) {
-          return cap(Math.ceil(parsed))
-        }
-      }
-
-      return cap(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1))
-    }
+// Delay requested by the server via retry-after-ms / retry-after headers, uncapped.
+export function serverDelay(error?: MessageV2.APIError) {
+  const headers = error?.data.responseHeaders
+  if (!headers) return undefined
+  const retryAfterMs = headers["retry-after-ms"]
+  if (retryAfterMs) {
+    const parsedMs = Number.parseFloat(retryAfterMs)
+    if (!Number.isNaN(parsedMs)) return parsedMs
   }
 
+  const retryAfter = headers["retry-after"]
+  if (!retryAfter) return undefined
+  const parsedSeconds = Number.parseFloat(retryAfter)
+  // convert seconds to milliseconds
+  if (!Number.isNaN(parsedSeconds)) return Math.ceil(parsedSeconds * 1000)
+  // Try parsing as HTTP date format
+  const parsed = Date.parse(retryAfter) - Date.now()
+  if (!Number.isNaN(parsed) && parsed > 0) return Math.ceil(parsed)
+  return undefined
+}
+
+export function delay(attempt: number, error?: MessageV2.APIError) {
+  const requested = serverDelay(error)
+  if (requested !== undefined) return cap(requested)
+  if (error?.data.responseHeaders) return cap(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1))
   return cap(Math.min(RETRY_INITIAL_DELAY * Math.pow(RETRY_BACKOFF_FACTOR, attempt - 1), RETRY_MAX_DELAY_NO_HEADERS))
 }
 
@@ -182,8 +182,13 @@ export function policy(opts: {
       const error = opts.parse(meta.input)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
+      // Out of attempts: stop retrying so the error surfaces and the turn ends.
+      if (meta.attempt > RETRY_MAX_ATTEMPTS) return Cause.done(meta.attempt)
+      const apiError = MessageV2.APIError.isInstance(error) ? error : undefined
+      // Server wants us to wait too long (e.g. daily limit): surface its message now.
+      if ((serverDelay(apiError) ?? 0) > RETRY_MAX_SERVER_DELAY) return Cause.done(meta.attempt)
       return Effect.gen(function* () {
-        const wait = delay(meta.attempt, MessageV2.APIError.isInstance(error) ? error : undefined)
+        const wait = delay(meta.attempt, apiError)
         const now = yield* Clock.currentTimeMillis
         yield* opts.set({
           attempt: meta.attempt,
